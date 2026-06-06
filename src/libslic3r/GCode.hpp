@@ -77,15 +77,20 @@ public:
         // BBS: add partplate logic
         const int                                                    plate_idx,
         const Vec3d                                                  plate_origin,
+        // Per-tower placement (plate-local mm) and rotation. One WipeTowerIntegration is created per
+        // prime tower group, so the position is supplied explicitly rather than read from config.
+        const Vec2f                                                 &tower_pos,
+        const float                                                  tower_rotation,
         const std::vector<WipeTower::ToolChangeResult>              &priming,
         const std::vector<std::vector<WipeTower::ToolChangeResult>> &tool_changes,
         const std::vector<std::vector<WipeTower::ToolChangeResult>> &local_z_tool_changes,
         const std::vector<std::vector<WipeTower::box_coordinates>>  &local_z_reserve_boxes,
-        const WipeTower::ToolChangeResult                           &final_purge) :
+        // May be null for towers that do not perform the end-of-print unload purge.
+        const WipeTower::ToolChangeResult                           *final_purge) :
         m_left(/*float(print_config.wipe_tower_x.value)*/ 0.f),
         m_right(float(/*print_config.wipe_tower_x.value +*/ print_config.prime_tower_width.value)),
-        m_wipe_tower_pos(float(print_config.wipe_tower_x.get_at(plate_idx)), float(print_config.wipe_tower_y.get_at(plate_idx))),
-        m_wipe_tower_rotation(float(print_config.wipe_tower_rotation_angle)),
+        m_wipe_tower_pos(tower_pos),
+        m_wipe_tower_rotation(tower_rotation),
         m_extruder_offsets(print_config.extruder_offset.values),
         m_priming(priming),
         m_tool_changes(tool_changes),
@@ -146,7 +151,8 @@ private:
     const std::vector<std::vector<WipeTower::ToolChangeResult>> &m_tool_changes;
     const std::vector<std::vector<WipeTower::ToolChangeResult>> &m_local_z_tool_changes;
     const std::vector<std::vector<WipeTower::box_coordinates>>  &m_local_z_reserve_boxes;
-    const WipeTower::ToolChangeResult                           &m_final_purge;
+    // Null for towers that do not emit the end-of-print unload purge.
+    const WipeTower::ToolChangeResult                           *m_final_purge;
     // Current layer index.
     int                                                          m_layer_idx;
     int                                                          m_tool_change_idx;
@@ -594,7 +600,20 @@ private:
     
     std::unique_ptr<AdaptivePAProcessor>      m_pa_processor;
 
-    std::unique_ptr<WipeTowerIntegration> m_wipe_tower;
+    // One integration per prime tower group (see PrintConfig::prime_tower_group). With the default
+    // configuration there is a single entry, matching the classic single wipe tower.
+    std::vector<std::unique_ptr<WipeTowerIntegration>> m_wipe_towers;
+    // Maps a filament/extruder id to the index in m_wipe_towers it purges onto.
+    std::vector<int>                                   m_filament_tower_index;
+    // Returns the wipe tower integration that the given extruder purges onto, or nullptr if none.
+    WipeTowerIntegration*                              wipe_tower_for(int extruder_id) const {
+        if (m_wipe_towers.empty())
+            return nullptr;
+        int idx = (extruder_id >= 0 && extruder_id < int(m_filament_tower_index.size())) ? m_filament_tower_index[extruder_id] : 0;
+        if (idx < 0 || idx >= int(m_wipe_towers.size()))
+            idx = 0;
+        return m_wipe_towers[idx].get();
+    }
 
     std::unique_ptr<SmallAreaInfillFlowCompensator> m_small_area_infill_flow_compensator;
     

@@ -769,41 +769,68 @@ struct FakeWipeTower
     }
 };
 
+// Generated output of a single prime/wipe tower instance.
+// When filaments are assigned to different prime tower groups (PrintConfig::prime_tower_group),
+// one PrimeTowerOutput is produced per group so that incompatible materials are never stacked on
+// the same tower. With the default configuration (all filaments in group 0) there is exactly one.
+struct PrimeTowerOutput
+{
+    // Placement of this tower on the plate (mm, plate-local). Consumed by WipeTowerIntegration.
+    Vec2f                                                position { Vec2f::Zero() };
+    float                                                rotation_angle = 0.f;
+    // Cache of tool changes per print layer for this tower.
+    std::unique_ptr<std::vector<WipeTower::ToolChangeResult>> priming;
+    std::vector<std::vector<WipeTower::ToolChangeResult>> tool_changes;
+    std::vector<std::vector<WipeTower::ToolChangeResult>> local_z_tool_changes;
+    std::vector<std::vector<WipeTower::box_coordinates>>  local_z_reserve_boxes;
+    std::unique_ptr<WipeTower::ToolChangeResult>          final_purge;
+    // Geometry for the exact bounding box / preview of this tower:
+    float                                                 depth = 0.f;
+    std::vector<std::pair<float, float>>                  z_and_depth_pairs;
+    float                                                 brim_width = 0.f;
+    float                                                 height = 0.f;
+
+    PrimeTowerOutput() = default;
+    PrimeTowerOutput(PrimeTowerOutput&&) = default;
+    PrimeTowerOutput& operator=(PrimeTowerOutput&&) = default;
+    PrimeTowerOutput(const PrimeTowerOutput&) = delete;
+    PrimeTowerOutput& operator=(const PrimeTowerOutput&) = delete;
+};
+
 struct WipeTowerData
 {
     // Following section will be consumed by the GCodeGenerator.
     // Tool ordering of a non-sequential print has to be known to calculate the wipe tower.
     // Cache it here, so it does not need to be recalculated during the G-code generation.
     ToolOrdering                                         &tool_ordering;
-    // Cache of tool changes per print layer.
-    std::unique_ptr<std::vector<WipeTower::ToolChangeResult>> priming;
-    std::vector<std::vector<WipeTower::ToolChangeResult>> tool_changes;
-    std::vector<std::vector<WipeTower::ToolChangeResult>> local_z_tool_changes;
-    std::unique_ptr<WipeTower::ToolChangeResult>          final_purge;
+    // One output per prime tower group used by the print (always >= 1 after generation).
+    // towers[0] is the primary tower and matches the legacy single-tower behaviour.
+    std::vector<PrimeTowerOutput>                         towers;
+    // Aggregate statistics over all towers:
     std::vector<float>                                    used_filament;
     int                                                   number_of_toolchanges;
 
-    // Depth of the wipe tower to pass to GLCanvas3D for exact bounding box:
+    // Depth/brim of the primary tower, used by wipe_tower_data() for the pre-slice preview/bbox estimate:
     float                                                 depth;
     std::vector<std::pair<float, float>>                  z_and_depth_pairs;
-    std::vector<std::vector<WipeTower::box_coordinates>>  local_z_reserve_boxes;
     float                                                 brim_width;
     float                                                 height;
 
+    // Number of prime towers generated for this plate.
+    size_t tower_count() const { return towers.size(); }
+
     void clear() {
-        priming.reset(nullptr);
-        tool_changes.clear();
-        local_z_tool_changes.clear();
-        final_purge.reset(nullptr);
+        towers.clear();
         used_filament.clear();
         number_of_toolchanges = -1;
         depth = 0.f;
-        local_z_reserve_boxes.clear();
+        z_and_depth_pairs.clear();
         brim_width = 0.f;
+        height = 0.f;
     }
 
 private:
-	// Only allow the WipeTowerData to be instantiated internally by Print, 
+	// Only allow the WipeTowerData to be instantiated internally by Print,
 	// as this WipeTowerData shares reference to Print::m_tool_ordering.
 	friend class Print;
 	WipeTowerData(ToolOrdering &tool_ordering) : tool_ordering(tool_ordering) { clear(); }
@@ -997,6 +1024,16 @@ public:
     bool                        has_wipe_tower() const;
     const WipeTowerData&        wipe_tower_data(size_t filaments_cnt = 0) const;
     const ToolOrdering& 		tool_ordering() const { return m_tool_ordering; }
+
+    // Prime tower groups (PrintConfig::prime_tower_group): filaments assigned to different groups
+    // are purged on separate towers so incompatible materials are never stacked together.
+    // Returns the distinct group ids actually used by the print's extruders, stable-sorted.
+    std::vector<int>            prime_tower_groups_used() const;
+    // Compacted tower index (0..N-1) that the given extruder/filament purges onto.
+    int                         tower_index_of(unsigned int extruder_id) const;
+    // Placement of tower `tower_idx` on plate `plate_idx`. Phase 1: auto-layout from the single
+    // anchor (wipe_tower_x/y). A future phase may return a stored manual position instead.
+    Vec2f                       tower_position(int plate_idx, int tower_idx) const;
 
     bool                        enable_timelapse_print() const;
 

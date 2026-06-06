@@ -136,28 +136,28 @@ BoundingBoxf get_print_object_extrusions_extents(const PrintObject &print_object
 BoundingBoxf get_wipe_tower_extrusions_extents(const Print &print, const coordf_t max_print_z)
 {
     // Wipe tower extrusions are saved as if the tower was at the origin with no rotation
-    // We need to get position and angle of the wipe tower to transform them to actual position.
-    int plate_idx = print.get_plate_index();
+    // We need to get position and angle of each tower to transform them to actual position.
     Vec3d plate_origin = print.get_plate_origin();
-    double wipe_tower_x = print.config().wipe_tower_x.get_at(plate_idx) + plate_origin(0);
-    double wipe_tower_y = print.config().wipe_tower_y.get_at(plate_idx) + plate_origin(1);
-    Transform2d trafo =
-        Eigen::Translation2d(wipe_tower_x, wipe_tower_y) *
-        Eigen::Rotation2Dd(Geometry::deg2rad(print.config().wipe_tower_rotation_angle.value));
 
     BoundingBoxf bbox;
-    for (const std::vector<WipeTower::ToolChangeResult> &tool_changes : print.wipe_tower_data().tool_changes) {
-        if (! tool_changes.empty() && tool_changes.front().print_z > max_print_z)
-            break;
-        for (const WipeTower::ToolChangeResult &tcr : tool_changes) {
-            for (size_t i = 1; i < tcr.extrusions.size(); ++ i) {
-                const WipeTower::Extrusion &e = tcr.extrusions[i];
-                if (e.width > 0) {
-                    Vec2d delta = 0.5 * Vec2d(e.width, e.width);
-                    Vec2d p1 = trafo * (&e - 1)->pos.cast<double>();
-                    Vec2d p2 = trafo * e.pos.cast<double>();
-                    bbox.merge(p1.cwiseMin(p2) - delta);
-                    bbox.merge(p1.cwiseMax(p2) + delta);
+    // One or more prime towers (per prime_tower_group); each has its own placement.
+    for (const PrimeTowerOutput &tower : print.wipe_tower_data().towers) {
+        Transform2d trafo =
+            Eigen::Translation2d(double(tower.position.x()) + plate_origin(0), double(tower.position.y()) + plate_origin(1)) *
+            Eigen::Rotation2Dd(Geometry::deg2rad(double(tower.rotation_angle)));
+        for (const std::vector<WipeTower::ToolChangeResult> &tool_changes : tower.tool_changes) {
+            if (! tool_changes.empty() && tool_changes.front().print_z > max_print_z)
+                break;
+            for (const WipeTower::ToolChangeResult &tcr : tool_changes) {
+                for (size_t i = 1; i < tcr.extrusions.size(); ++ i) {
+                    const WipeTower::Extrusion &e = tcr.extrusions[i];
+                    if (e.width > 0) {
+                        Vec2d delta = 0.5 * Vec2d(e.width, e.width);
+                        Vec2d p1 = trafo * (&e - 1)->pos.cast<double>();
+                        Vec2d p2 = trafo * e.pos.cast<double>();
+                        bbox.merge(p1.cwiseMin(p2) - delta);
+                        bbox.merge(p1.cwiseMax(p2) + delta);
+                    }
                 }
             }
         }
@@ -169,8 +169,10 @@ BoundingBoxf get_wipe_tower_extrusions_extents(const Print &print, const coordf_
 BoundingBoxf get_wipe_tower_priming_extrusions_extents(const Print &print)
 {
     BoundingBoxf bbox;
-    if (print.wipe_tower_data().priming != nullptr) {
-        for (const WipeTower::ToolChangeResult &tcr : *print.wipe_tower_data().priming) {
+    for (const PrimeTowerOutput &tower : print.wipe_tower_data().towers) {
+        if (tower.priming == nullptr)
+            continue;
+        for (const WipeTower::ToolChangeResult &tcr : *tower.priming) {
             for (size_t i = 1; i < tcr.extrusions.size(); ++ i) {
                 const WipeTower::Extrusion &e = tcr.extrusions[i];
                 if (e.width > 0) {

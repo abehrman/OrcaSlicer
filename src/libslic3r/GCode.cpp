@@ -1301,10 +1301,10 @@ bool WipeTowerIntegration::is_empty_wipe_tower_gcode(GCode& gcodegen, int extrud
 std::string WipeTowerIntegration::finalize(GCode& gcodegen)
 {
     std::string gcode;
-    if (!gcodegen.is_BBL_Printer()) {
-        if (std::abs(gcodegen.writer().get_position().z() - m_final_purge.print_z) > EPSILON)
-            gcode += gcodegen.change_layer(m_final_purge.print_z);
-        gcode += append_tcr2(gcodegen, m_final_purge, -1);
+    if (!gcodegen.is_BBL_Printer() && m_final_purge != nullptr) {
+        if (std::abs(gcodegen.writer().get_position().z() - m_final_purge->print_z) > EPSILON)
+            gcode += gcodegen.change_layer(m_final_purge->print_z);
+        gcode += append_tcr2(gcodegen, *m_final_purge, -1);
     }
 
     return gcode;
@@ -2908,16 +2908,28 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
             std::vector<std::pair<coordf_t, std::vector<LayerToPrint>>> layers_to_print = collect_layers_to_print(print);
             // Prusa Multi-Material wipe tower.
             if (has_wipe_tower && !layers_to_print.empty()) {
-                m_wipe_tower.reset(new WipeTowerIntegration(print.config(), print.get_plate_index(), print.get_plate_origin(),
-                                                            *print.wipe_tower_data().priming.get(), print.wipe_tower_data().tool_changes,
-                                                            print.wipe_tower_data().local_z_tool_changes,
-                                                            print.wipe_tower_data().local_z_reserve_boxes,
-                                                            *print.wipe_tower_data().final_purge.get()));
+                // Build one integration per prime tower group, and a filament -> tower routing map so a
+                // toolchange to filament F is emitted on the tower owning F's group.
+                static const std::vector<WipeTower::ToolChangeResult> s_empty_priming;
+                const WipeTowerData &wtd = print.wipe_tower_data();
+                m_wipe_towers.clear();
+                for (const PrimeTowerOutput &tower : wtd.towers) {
+                    m_wipe_towers.emplace_back(new WipeTowerIntegration(
+                        print.config(), print.get_plate_index(), print.get_plate_origin(),
+                        tower.position, tower.rotation_angle,
+                        tower.priming ? *tower.priming : s_empty_priming,
+                        tower.tool_changes, tower.local_z_tool_changes, tower.local_z_reserve_boxes,
+                        tower.final_purge.get()));
+                }
+                m_filament_tower_index.assign(print.config().filament_diameter.size(), 0);
+                for (int e = 0; e < int(m_filament_tower_index.size()); ++e)
+                    m_filament_tower_index[e] = print.tower_index_of((unsigned int) e);
                 // BBS
                 file.write(m_writer.travel_to_z(initial_layer_print_height + m_config.z_offset.value, "Move to the first layer height"));
 
                 if (!is_bbl_printers && print.config().single_extruder_multi_material_priming) {
-                    file.write(m_wipe_tower->prime(*this));
+                    for (auto &wt : m_wipe_towers)
+                        file.write(wt->prime(*this));
                     // Verify, whether the print overaps the priming extrusions.
                     BoundingBoxf bbox_print(get_print_extrusions_extents(print));
                     coordf_t     twolayers_printz = ((layers_to_print.size() == 1) ? layers_to_print.front() : layers_to_print[1]).first +
@@ -2964,9 +2976,9 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
                     file.write("M1003 S0\n");
                 }
             }
-            if (m_wipe_tower)
-                // Purge the extruder, pull out the active filament.
-                file.write(m_wipe_tower->finalize(*this));
+            // Purge the extruder, pull out the active filament (only the owning tower emits this).
+            for (auto &wt : m_wipe_towers)
+                file.write(wt->finalize(*this));
         }
     }
     // BBS: the last retraction
@@ -3118,8 +3130,9 @@ void GCode::process_layers(const Print&                                         
                 const std::pair<coordf_t, std::vector<LayerToPrint>>& layer       = layers_to_print[layer_to_print_idx++];
                 const LayerTools&                                     layer_tools = tool_ordering.tools_for_layer(layer.first);
                 print.set_status(80, Slic3r::format(_(L("Generating G-code: layer %1%")), std::to_string(layer_to_print_idx)));
-                if (m_wipe_tower && layer_tools.has_wipe_tower)
-                    m_wipe_tower->next_layer();
+                if (!m_wipe_towers.empty() && layer_tools.has_wipe_tower)
+                    for (auto &wt : m_wipe_towers)
+                        wt->next_layer();
                 // BBS
                 check_placeholder_parser_failed();
                 print.throw_if_canceled();
@@ -4741,12 +4754,12 @@ LayerResult GCode::process_layer(const Print& print,
 
     PrinterStructure printer_structure                           = m_config.printer_structure.value;
     bool             need_insert_timelapse_gcode_for_traditional = false;
-    if (printer_structure == PrinterStructure::psI3 && !m_spiral_vase && (!m_wipe_tower || !m_wipe_tower->enable_timelapse_print()) &&
+    if (printer_structure == PrinterStructure::psI3 && !m_spiral_vase && (m_wipe_towers.empty() || !m_wipe_towers.front()->enable_timelapse_print()) &&
         print.config().print_sequence == PrintSequence::ByLayer) {
         need_insert_timelapse_gcode_for_traditional = true;
     }
     bool has_insert_timelapse_gcode = false;
-    bool has_wipe_tower             = (layer_tools.has_wipe_tower && m_wipe_tower);
+    bool has_wipe_tower             = (layer_tools.has_wipe_tower && !m_wipe_towers.empty());
 
     auto insert_timelapse_gcode = [this, print_z, &print]() -> std::string {
         std::string gcode_res;
@@ -5747,8 +5760,8 @@ LayerResult GCode::process_layer(const Print& print,
         }
     }
 
-    if (m_wipe_tower)
-        m_wipe_tower->set_is_first_print(true);
+    for (auto &wt : m_wipe_towers)
+        wt->set_is_first_print(true);
 
     struct LocalZPassRef {
         size_t            layer_to_print_idx { 0 };
@@ -5830,8 +5843,9 @@ LayerResult GCode::process_layer(const Print& print,
                                 << " path_passes=" << local_z_pass_refs.size();
         gcode += "; local-z phase-b path passes begin\n";
         auto emit_local_z_toolchange = [&](unsigned int extruder_id, double toolchange_print_z) {
-            if (has_wipe_tower && m_wipe_tower) {
-                gcode += m_wipe_tower->tool_change(*this, int(extruder_id), false, true, print_z + m_config.z_offset.value);
+            WipeTowerIntegration *wt = wipe_tower_for(int(extruder_id));
+            if (has_wipe_tower && wt) {
+                gcode += wt->tool_change(*this, int(extruder_id), false, true, print_z + m_config.z_offset.value);
                 // Local-Z phase-b uses the wipe tower outside the normal per-layer
                 // extruder loop, so mirror the usual toolchange bookkeeping here.
                 // This forces the next object path to refresh WIDTH/HEIGHT tags
@@ -6211,8 +6225,9 @@ LayerResult GCode::process_layer(const Print& print,
                                     extruder_id);
 
         std::string gcode_toolchange;
-        if (has_wipe_tower) {
-            if (!m_wipe_tower->is_empty_wipe_tower_gcode(*this, extruder_id, extruder_id == layer_extruders.back())) {
+        WipeTowerIntegration *wt = has_wipe_tower ? wipe_tower_for(int(extruder_id)) : nullptr;
+        if (wt) {
+            if (!wt->is_empty_wipe_tower_gcode(*this, extruder_id, extruder_id == layer_extruders.back())) {
                 if (need_insert_timelapse_gcode_for_traditional && !has_insert_timelapse_gcode) {
                     gcode += this->retract(false, false, LiftType::NormalLift);
                     m_writer.add_object_change_labels(gcode);
@@ -6231,7 +6246,7 @@ LayerResult GCode::process_layer(const Print& print,
                     }
                     has_insert_timelapse_gcode = true;
                 }
-                gcode_toolchange = m_wipe_tower->tool_change(*this, extruder_id, extruder_id == layer_extruders.back());
+                gcode_toolchange = wt->tool_change(*this, extruder_id, extruder_id == layer_extruders.back());
             }
         } else {
             gcode_toolchange = this->set_extruder(extruder_id, print_z);
@@ -6243,7 +6258,7 @@ LayerResult GCode::process_layer(const Print& print,
         gcode += std::move(gcode_toolchange);
 
         // let analyzer tag generator aware of a role type change
-        if (layer_tools.has_wipe_tower && m_wipe_tower)
+        if (layer_tools.has_wipe_tower && !m_wipe_towers.empty())
             m_last_processor_extrusion_role = erWipeTower;
 
         auto objects_by_extruder_it = by_extruder.find(extruder_id);

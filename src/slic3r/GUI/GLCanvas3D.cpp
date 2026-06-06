@@ -9474,7 +9474,7 @@ void GLCanvas3D::_load_print_object_toolpaths(const PrintObject& print_object, c
 void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, const std::vector<std::string>& str_tool_colors)
 {
     const Print *print = this->fff_print();
-    if (print == nullptr || print->wipe_tower_data().tool_changes.empty())
+    if (print == nullptr || print->wipe_tower_data().towers.empty())
         return;
 
     if (!print->is_step_done(psWipeTower))
@@ -9500,8 +9500,10 @@ void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, con
             return this->color_by_tool() ? std::min<int>(this->number_tools() - 1, std::max<int>(tool, 0)) : feature;
         }
 
+        // Tool changes of the prime tower currently being rendered (see loop below).
+        const std::vector<std::vector<WipeTower::ToolChangeResult>> *tool_changes_ptr = nullptr;
         const std::vector<WipeTower::ToolChangeResult>& tool_change(size_t idx) {
-            const auto &tool_changes = print->wipe_tower_data().tool_changes;
+            const auto &tool_changes = *tool_changes_ptr;
             return priming.empty() ?
                 ((idx == tool_changes.size()) ? final : tool_changes[idx]) :
                 ((idx == 0) ? priming : (idx == tool_changes.size() + 1) ? final : tool_changes[idx - 1]);
@@ -9512,26 +9514,12 @@ void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, con
 
     ctxt.print = print;
     ctxt.tool_colors = tool_colors.empty() ? nullptr : &tool_colors;
-    if (print->wipe_tower_data().priming)
-        for (int i=0; i<(int)print->wipe_tower_data().priming.get()->size(); ++i)
-            ctxt.priming.emplace_back(print->wipe_tower_data().priming.get()->at(i));
-    if (print->wipe_tower_data().final_purge)
-        ctxt.final.emplace_back(*print->wipe_tower_data().final_purge.get());
-
-    ctxt.wipe_tower_angle = ctxt.print->config().wipe_tower_rotation_angle.value/180.f * PI;
 
     // BBS: add partplate logic
-    int plate_idx = print->get_plate_index();
     Vec3d plate_origin = print->get_plate_origin();
-    double wipe_tower_x = ctxt.print->config().wipe_tower_x.get_at(plate_idx) + plate_origin(0);
-    double wipe_tower_y = ctxt.print->config().wipe_tower_y.get_at(plate_idx) + plate_origin(1);
-    ctxt.wipe_tower_pos = Vec2f(wipe_tower_x, wipe_tower_y);
 
     BOOST_LOG_TRIVIAL(debug) << "Loading wipe tower toolpaths in parallel - start" << m_volumes.log_memory_info() << log_memory_info();
 
-    //FIXME Improve the heuristics for a grain size.
-    size_t          n_items = print->wipe_tower_data().tool_changes.size() + (ctxt.priming.empty() ? 0 : 1);
-    size_t          grain_size = std::max(n_items / 128, size_t(1));
     tbb::spin_mutex new_volume_mutex;
     auto            new_volume = [this, &new_volume_mutex](const ColorRGBA& color) {
         auto *volume = new GLVolume(color);
@@ -9546,6 +9534,24 @@ void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, con
         return volume;
     };
     const size_t   volumes_cnt_initial = m_volumes.volumes.size();
+
+    // Render each prime tower (one per prime_tower_group) at its own placement.
+    for (const PrimeTowerOutput &tower : print->wipe_tower_data().towers) {
+        ctxt.tool_changes_ptr = &tower.tool_changes;
+        ctxt.priming.clear();
+        ctxt.final.clear();
+        if (tower.priming)
+            for (int i = 0; i < (int) tower.priming->size(); ++i)
+                ctxt.priming.emplace_back(tower.priming->at(i));
+        if (tower.final_purge)
+            ctxt.final.emplace_back(*tower.final_purge);
+
+        ctxt.wipe_tower_angle = tower.rotation_angle / 180.f * PI;
+        ctxt.wipe_tower_pos   = Vec2f(float(tower.position.x() + plate_origin(0)), float(tower.position.y() + plate_origin(1)));
+
+    //FIXME Improve the heuristics for a grain size.
+    size_t          n_items = tower.tool_changes.size() + (ctxt.priming.empty() ? 0 : 1);
+    size_t          grain_size = std::max(n_items / 128, size_t(1));
     std::vector<GLVolumeCollection> volumes_per_thread(n_items);
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, n_items, grain_size),
@@ -9633,6 +9639,7 @@ void GLCanvas3D::_load_wipe_tower_toolpaths(const BuildVolume& build_volume, con
                 vols[i]->model.init_from(std::move(geometries[i]));
         }
         });
+    } // for each prime tower
 
     BOOST_LOG_TRIVIAL(debug) << "Loading wipe tower toolpaths in parallel - finalizing results" << m_volumes.log_memory_info() << log_memory_info();
     // Remove empty volumes from the newly added volumes.

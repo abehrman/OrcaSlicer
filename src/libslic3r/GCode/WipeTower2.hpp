@@ -104,6 +104,9 @@ public:
 
 	// Return the wipe tower position.
 	const Vec2f& 		 position() const { return m_wipe_tower_pos; }
+	// Override the tower position (plate-local, mm). Used to place multiple per-group towers
+	// independently; must be called before plan_toolchange()/generate().
+	void                 set_position(const Vec2f& pos) { m_wipe_tower_pos = pos; }
 	// Return the wipe tower width.
 	float     		 width()    const { return m_wipe_tower_width; }
 	// The wipe tower is finished, there should be no more tool changes or wipe tower prints.

@@ -6093,6 +6093,18 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(0));
 
+    def = this->add("prime_tower_group", coInts);
+    def->label = L("Prime tower group");
+    def->category = L("Extruders");
+    def->tooltip = L("Assigns this filament to a prime tower group. One prime tower is built per distinct group "
+                     "used in the print, and a filament is only ever purged on the tower of its own group. "
+                     "Put incompatible materials (for example PETG and PLA) in different groups so they are never "
+                     "stacked on the same tower, which prevents the tower from delaminating and falling over. "
+                     "All filaments default to group 0, which reproduces the classic single prime tower.");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts{0});
+
     def = this->add("wiping_volumes_extruders", coFloats);
     def->label = L("Purging volumes - load/unload volumes");
     def->tooltip = L("This vector saves required volumes to change from/to each tool used on the "
