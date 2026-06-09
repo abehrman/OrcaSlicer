@@ -3235,7 +3235,7 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Exclude objects");
     def->tooltip = L("Enable this option to add EXCLUDE OBJECT command in G-code.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(false));
+    def->set_default_value(new ConfigOptionBool(true));
 
     def = this->add("gcode_comments", coBool);
     def->label = L("Verbose G-code");
