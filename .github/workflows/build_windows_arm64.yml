@@ -1,0 +1,107 @@
+name: Build Windows ARM64
+
+# Native Windows-on-ARM (ARM64) build of Snapmaker_Orca on the windows-11-arm
+# hosted runner. Self-contained: it does not use the x64/mac/linux reusable
+# workflows so the existing pipelines are untouched. Produces an unsigned,
+# installer-less portable ARM64 build artifact.
+
+on:
+  push:
+    branches:
+      - 'claude/orcaslicer-prime-towers-materials-zWUrU'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: win-arm64-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_windows_arm64:
+    name: Build Windows ARM64
+    runs-on: windows-11-arm
+    env:
+      WindowsSdkDir: 'C:\Program Files (x86)\Windows Kits\10\'
+      WindowsSDKVersion: '10.0.26100.0\'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CMake 3.31.x (Windows ARM64)
+        # windows-11-arm ships CMake 4.x, which removed pre-3.5 policy
+        # compatibility AND has incomplete ASM_ARMASM linker modules
+        # (breaks Boost.Context on ARM64). Pin to the last 3.x release.
+        shell: pwsh
+        run: |
+          $ver = "3.31.6"
+          $url = "https://github.com/Kitware/CMake/releases/download/v$ver/cmake-$ver-windows-arm64.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\cmake.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\cmake.zip" -DestinationPath "$env:RUNNER_TEMP\cmake" -Force
+          $cmakeBin = "$env:RUNNER_TEMP\cmake\cmake-$ver-windows-arm64\bin"
+          if (-not (Test-Path "$cmakeBin\cmake.exe")) { throw "cmake.exe not found at $cmakeBin" }
+          Add-Content -Path $env:GITHUB_PATH -Value $cmakeBin
+
+      - name: Verify CMake version
+        shell: pwsh
+        run: cmake --version
+
+      - name: Setup MSVC (msbuild on PATH)
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install MSYS2 (clangarm64) with GMP/MPFR and LLVM tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            mingw-w64-clang-aarch64-gmp
+            mingw-w64-clang-aarch64-mpfr
+            mingw-w64-clang-aarch64-llvm
+
+      - name: Stage ARM64 GMP/MPFR (no prebuilt blobs exist for win-arm64)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          BIN=/clangarm64/bin
+          REPO=$(cygpath -u "$GITHUB_WORKSPACE")
+
+          make_import_lib() {
+            local dll="$1"; local lib="$2"; local def="/tmp/${dll%.dll}.def"
+            echo "EXPORTS" > "$def"
+            llvm-readobj --coff-exports "$BIN/$dll" | awk '/Name: /{print $2}' >> "$def"
+            llvm-dlltool -m arm64 -D "$dll" -d "$def" -l "$BIN/$lib"
+          }
+
+          make_import_lib libgmp-10.dll libgmp-10.lib
+          MPFR_DLL=$(ls $BIN/libmpfr-*.dll | head -1 | xargs basename)
+          if [ "$MPFR_DLL" != "libmpfr-4.dll" ]; then cp "$BIN/$MPFR_DLL" "$BIN/libmpfr-4.dll"; fi
+          make_import_lib libmpfr-4.dll libmpfr-4.lib
+
+          mkdir -p $REPO/deps/GMP/gmp/lib/win-arm64 $REPO/deps/MPFR/mpfr/lib/win-arm64
+          mkdir -p $REPO/deps/GMP/gmp/include $REPO/deps/MPFR/mpfr/include
+          cp $BIN/libgmp-10.dll $BIN/libgmp-10.lib $REPO/deps/GMP/gmp/lib/win-arm64/
+          cp $BIN/libmpfr-4.dll $BIN/libmpfr-4.lib $REPO/deps/MPFR/mpfr/lib/win-arm64/
+          cp /clangarm64/include/gmp.h  $REPO/deps/GMP/gmp/include/  || true
+          cp /clangarm64/include/mpfr.h $REPO/deps/MPFR/mpfr/include/ || true
+
+      - name: Build dependencies (ARM64)
+        shell: cmd
+        run: .\build_release_vs2022.bat deps arm64
+
+      - name: Build slicer (ARM64)
+        shell: cmd
+        run: .\build_release_vs2022.bat slicer arm64
+
+      - name: Package portable ARM64 build
+        shell: pwsh
+        run: |
+          $app = "build-arm64\Snapmaker_Orca"
+          if (-not (Test-Path $app)) { throw "Build output not found at $app" }
+          Compress-Archive -Path "$app\*" -DestinationPath "Snapmaker_Orca-Windows-ARM64.zip" -Force
+
+      - name: Upload ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snapmaker_Orca-Windows-ARM64
+          path: Snapmaker_Orca-Windows-ARM64.zip
+          if-no-files-found: error
