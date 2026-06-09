@@ -9,7 +9,6 @@ on:
   push:
     branches:
       - 'claude/orcaslicer-prime-towers-materials-zWUrU'
-  pull_request:
   workflow_dispatch:
 
 concurrency:
