@@ -83,7 +83,18 @@ jobs:
           cp /clangarm64/include/gmp.h  $REPO/deps/GMP/gmp/include/  || true
           cp /clangarm64/include/mpfr.h $REPO/deps/MPFR/mpfr/include/ || true
 
+      - name: Cache ARM64 deps build
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: deps/build-arm64/OrcaSlicer_dep
+          # Fixed-depth key over the dependency build scripts only: fast to hash
+          # and stable, unlike a recursive deps/** key (slow, and churns on the
+          # staged GMP/MPFR blobs and build outputs). Bump v1 to force a rebuild.
+          key: win-arm64-deps-v1-${{ hashFiles('deps/CMakeLists.txt', 'deps/*.cmake', 'deps/*/*.cmake', 'build_release_vs2022.bat') }}
+
       - name: Build dependencies (ARM64)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
         shell: cmd
         run: .\build_release_vs2022.bat deps arm64
 
