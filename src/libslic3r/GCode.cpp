@@ -430,10 +430,19 @@ static inline Point wipe_tower_point_to_object_point(GCode& gcodegen, const Vec2
 
 std::string WipeTowerIntegration::append_tcr(GCode& gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id, double z) const
 {
-    if (new_extruder_id != -1 && new_extruder_id != tcr.new_tool)
+    if (new_extruder_id != -1 && new_extruder_id != tcr.new_tool) {
+        // Diagnostic dump: list every toolchange this tower generated for the current layer
+        // (initial->new), so a single failing slice reveals whether the requested change is
+        // missing from this tower or merely out of order. See prime_tower_group multi-tower routing.
+        std::string layer_dump;
+        if (m_layer_idx >= 0 && size_t(m_layer_idx) < m_tool_changes.size())
+            for (const WipeTower::ToolChangeResult &t : m_tool_changes[size_t(m_layer_idx)])
+                layer_dump += Slic3r::format(" %1%->%2%", t.initial_tool, t.new_tool);
+        const int cur_tool = gcodegen.writer().extruder() ? int(gcodegen.writer().extruder()->id()) : -1;
         throw Slic3r::InvalidArgument(Slic3r::format(
-            "Error: WipeTowerIntegration::append_tcr unexpected toolchange: layer_idx=%1% tool_change_idx=%2% requested=%3% expected=%4% initial=%5%",
-            m_layer_idx, m_tool_change_idx, new_extruder_id, tcr.new_tool, tcr.initial_tool));
+            "Error: WipeTowerIntegration::append_tcr unexpected toolchange: layer_idx=%1% tool_change_idx=%2% requested=%3% expected=%4% initial=%5% current_tool=%6% n_layers=%7% this_layer_changes={%8% }",
+            m_layer_idx, m_tool_change_idx, new_extruder_id, tcr.new_tool, tcr.initial_tool, cur_tool, m_tool_changes.size(), layer_dump));
+    }
 
     std::string gcode;
 
@@ -692,10 +701,19 @@ std::string WipeTowerIntegration::append_tcr(GCode& gcodegen, const WipeTower::T
 
 std::string WipeTowerIntegration::append_tcr2(GCode& gcodegen, const WipeTower::ToolChangeResult& tcr, int new_extruder_id, double z) const
 {
-    if (new_extruder_id != -1 && new_extruder_id != tcr.new_tool)
+    if (new_extruder_id != -1 && new_extruder_id != tcr.new_tool) {
+        // Diagnostic dump: list every toolchange this tower generated for the current layer
+        // (initial->new), so a single failing slice reveals whether the requested change is
+        // missing from this tower or merely out of order. See prime_tower_group multi-tower routing.
+        std::string layer_dump;
+        if (m_layer_idx >= 0 && size_t(m_layer_idx) < m_tool_changes.size())
+            for (const WipeTower::ToolChangeResult &t : m_tool_changes[size_t(m_layer_idx)])
+                layer_dump += Slic3r::format(" %1%->%2%", t.initial_tool, t.new_tool);
+        const int cur_tool = gcodegen.writer().extruder() ? int(gcodegen.writer().extruder()->id()) : -1;
         throw Slic3r::InvalidArgument(Slic3r::format(
-            "Error: WipeTowerIntegration::append_tcr unexpected toolchange: layer_idx=%1% tool_change_idx=%2% requested=%3% expected=%4% initial=%5%",
-            m_layer_idx, m_tool_change_idx, new_extruder_id, tcr.new_tool, tcr.initial_tool));
+            "Error: WipeTowerIntegration::append_tcr unexpected toolchange: layer_idx=%1% tool_change_idx=%2% requested=%3% expected=%4% initial=%5% current_tool=%6% n_layers=%7% this_layer_changes={%8% }",
+            m_layer_idx, m_tool_change_idx, new_extruder_id, tcr.new_tool, tcr.initial_tool, cur_tool, m_tool_changes.size(), layer_dump));
+    }
 
     std::string gcode;
 
