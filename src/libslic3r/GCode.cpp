@@ -1256,8 +1256,23 @@ std::string WipeTowerIntegration::tool_change(GCode& gcodegen, int extruder_id, 
 
                 if (!ignore_sparse) {
                     realign_nominal_toolchange_idx(extruder_id);
-                    gcode += append_tcr2(gcodegen, m_tool_changes[m_layer_idx][m_tool_change_idx++], extruder_id, wipe_tower_z);
-                    m_last_wipe_tower_print_z = wipe_tower_z;
+                    const WipeTower::ToolChangeResult &tcr = m_tool_changes[m_layer_idx][m_tool_change_idx];
+                    if (extruder_id == tcr.new_tool) {
+                        gcode += append_tcr2(gcodegen, tcr, extruder_id, wipe_tower_z);
+                        ++m_tool_change_idx;
+                        m_last_wipe_tower_print_z = wipe_tower_z;
+                    } else {
+                        // prime_tower_group multi-tower edge case: this tower generated no purge for
+                        // `extruder_id` at this layer (realign found no match). Don't assert/crash (the old
+                        // behaviour) — emit a correct direct tool change instead. The wipe-tower purge for this
+                        // single transition is skipped; the warning carries the data needed to perfect routing.
+                        BOOST_LOG_TRIVIAL(warning)
+                            << "prime_tower fallback (non-BBL): tower@(" << m_wipe_tower_pos.x() << ","
+                            << m_wipe_tower_pos.y() << ") layer=" << m_layer_idx << " has no purge for extruder "
+                            << extruder_id << " (next planned new_tool=" << tcr.new_tool << "); direct tool change.";
+                        gcode += gcodegen.set_extruder(unsigned(extruder_id),
+                                                       wipe_tower_z >= 0. ? wipe_tower_z : gcodegen.writer().get_position().z());
+                    }
                 }
             }
         }
@@ -1286,8 +1301,22 @@ std::string WipeTowerIntegration::tool_change(GCode& gcodegen, int extruder_id, 
 
             if (!ignore_sparse) {
                 realign_nominal_toolchange_idx(extruder_id);
-                gcode += append_tcr(gcodegen, m_tool_changes[m_layer_idx][m_tool_change_idx++], extruder_id, wipe_tower_z);
-                m_last_wipe_tower_print_z = wipe_tower_z;
+                const WipeTower::ToolChangeResult &tcr = m_tool_changes[m_layer_idx][m_tool_change_idx];
+                if (extruder_id == tcr.new_tool) {
+                    gcode += append_tcr(gcodegen, tcr, extruder_id, wipe_tower_z);
+                    ++m_tool_change_idx;
+                    m_last_wipe_tower_print_z = wipe_tower_z;
+                } else {
+                    // prime_tower_group multi-tower edge case (see non-BBL path above): no purge planned
+                    // for `extruder_id` on this tower/layer. Emit a correct direct tool change instead of
+                    // asserting; the wipe-tower purge for this transition is skipped.
+                    BOOST_LOG_TRIVIAL(warning)
+                        << "prime_tower fallback (BBL): tower@(" << m_wipe_tower_pos.x() << ","
+                        << m_wipe_tower_pos.y() << ") layer=" << m_layer_idx << " has no purge for extruder "
+                        << extruder_id << " (next planned new_tool=" << tcr.new_tool << "); direct tool change.";
+                    gcode += gcodegen.set_extruder(unsigned(extruder_id),
+                                                   wipe_tower_z >= 0. ? wipe_tower_z : gcodegen.writer().get_position().z());
+                }
             }
         }
     }
